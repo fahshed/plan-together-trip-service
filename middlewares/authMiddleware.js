@@ -9,7 +9,7 @@ const authenticateUser = async (req, res, next) => {
 
   try {
     const response = await axios.get(
-      `${process.env.USER_SERVICE_URL}/users/me`,
+      `${process.env.AUTH_SERVICE_URL}/auth/me`,
       {
         headers: { Authorization: authToken },
       }

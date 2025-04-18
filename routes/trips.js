@@ -7,11 +7,8 @@ const tripsRef = db.collection("trips");
 
 // CREATE TRIP
 router.post("/", async (req, res) => {
-  const user = req.user; // Authenticated user
+  const user = req.user;
   const { title, summary, createdAt, tags } = req.body;
-
-  console.log("User:", user); // Log the authenticated user
-  console.log("Request body:", req.body); // Log the request body
 
   if (!title) {
     return res.status(400).json({ error: "Missing required fields" });
@@ -23,7 +20,7 @@ router.post("/", async (req, res) => {
       id: newTripRef.id,
       title,
       summary,
-      createdBy: user.id, // Use authenticated user's ID
+      createdBy: user.id,
       createdAt,
       owner: {
         userId: user.id,
@@ -46,50 +43,149 @@ router.post("/", async (req, res) => {
   }
 });
 
-// INVITE MEMBER BY EMAIL
-router.post("/:tripId/invite", async (req, res) => {
-  const { email } = req.body; // invited user
-  const { tripId } = req.params;
-  if (!email) {
-    return res.status(400).json({ error: "Missing invited user info" });
-  }
+// GET ALL TRIPS FOR A USER
+router.get("/user", async (req, res) => {
+  const user = req.user;
 
   try {
-    const response = await axios.post(
-      `${process.env.USER_SERVICE_URL}/users/email`,
-      {
-        email,
-      }
+    const tripsSnapshot = await tripsRef
+      .where("memberIds", "array-contains", user.id)
+      .get();
+
+    const ownerTripsSnapshot = await tripsRef
+      .where("owner.userId", "==", user.id)
+      .get();
+
+    const tripsSnapshotDocs = tripsSnapshot.docs;
+    const ownerTripsSnapshotDocs = ownerTripsSnapshot.docs;
+
+    const combinedTrips = [...tripsSnapshotDocs, ...ownerTripsSnapshotDocs];
+    const uniqueTrips = Array.from(
+      new Map(combinedTrips.map((doc) => [doc.id, doc])).values()
     );
 
-    if (response.status !== 200) {
-      return res.status(response.status).json({ error: response.data.error });
-    }
+    const trips = uniqueTrips.map((doc) => ({
+      id: doc.id,
+      ...doc.data(),
+    }));
 
-    const invitedUser = response.data;
-    const userId = invitedUser.id;
+    res.status(200).json(trips);
+  } catch (err) {
+    res
+      .status(500)
+      .json({ error: "Failed to retrieve trips", details: err.message });
+  }
+});
 
+// GET TRIP BY ID
+router.get("/:tripId", async (req, res) => {
+  const user = req.user;
+  const { tripId } = req.params;
+
+  try {
     const tripDoc = await tripsRef.doc(tripId).get();
     if (!tripDoc.exists) {
       return res.status(404).json({ error: "Trip not found" });
     }
     const trip = tripDoc.data();
 
+    if (trip.owner.userId !== user.id && !trip.memberIds.includes(user.id)) {
+      return res.status(403).json({ error: "Access denied" });
+    }
+
+    res.status(200).json({ id: tripDoc.id, ...trip });
+  } catch (err) {
+    res
+      .status(500)
+      .json({ error: "Failed to retrieve trip", details: err.message });
+  }
+});
+
+// GET MEMBERS AND OWNER OF A TRIP
+router.get("/:tripId/members", async (req, res) => {
+  const user = req.user;
+  const { tripId } = req.params;
+
+  try {
+    const tripDoc = await tripsRef.doc(tripId).get();
+    if (!tripDoc.exists) {
+      return res.status(404).json({ error: "Trip not found" });
+    }
+    const trip = tripDoc.data();
+
+    if (trip.owner.userId !== user.id && !trip.memberIds.includes(user.id)) {
+      return res.status(403).json({ error: "Access denied" });
+    }
+
+    const membersAndOwner = [trip.owner, ...trip.members];
+
+    res.status(200).json(membersAndOwner);
+  } catch (err) {
+    res
+      .status(500)
+      .json({ error: "Failed to retrieve members", details: err.message });
+  }
+});
+// eslint-disable-next-line complexity
+router.post("/:tripId/invite", async (req, res) => {
+  const user = req.user;
+  const { email } = req.body;
+  const { tripId } = req.params;
+  if (!email) {
+    return res.status(400).json({ error: "Missing invited user info" });
+  }
+
+  try {
+    const tripDoc = await tripsRef.doc(tripId).get();
+    if (!tripDoc.exists) {
+      return res.status(404).json({ error: "Trip not found" });
+    }
+    const trip = tripDoc.data();
+
+    if (trip.owner.userId !== user.id) {
+      return res.status(403).json({ error: "Only owner can invite users" });
+    }
+
+    let invitedUser;
+    try {
+      const response = await axios.post(
+        `${process.env.AUTH_SERVICE_URL}/auth/email`,
+        {
+          email,
+        }
+      );
+      invitedUser = response.data;
+    } catch (error) {
+      return res
+        .status(400)
+        .json({ error: error.response?.data?.error || error.message });
+    }
+
+    const userId = invitedUser.id;
+
     const isAlreadyMember = trip.members.some((m) => m.userId === userId);
+    if (trip.owner.userId === userId) {
+      return res.status(400).json({ error: "Cannot invite the owner" });
+    }
     if (isAlreadyMember) {
       return res.status(400).json({ error: "User already a member" });
     }
 
-    trip.members.push({
+    const newMember = {
       userId,
       email: invitedUser.email,
       firstName: invitedUser.firstName,
       lastName: invitedUser.lastName,
-    });
+    };
+    trip.members.push(newMember);
     trip.memberIds.push(userId);
-    await tripsRef.doc(tripId).update({ members: trip.members });
+    await tripsRef
+      .doc(tripId)
+      .update({ members: trip.members, memberIds: trip.memberIds });
 
-    res.status(200).json({ message: "User invited successfully" });
+    res
+      .status(200)
+      .json({ message: "User invited successfully", member: newMember });
   } catch (err) {
     res
       .status(500)
@@ -99,7 +195,7 @@ router.post("/:tripId/invite", async (req, res) => {
 
 // CREATE EVENT
 router.post("/:tripId/events", async (req, res) => {
-  const user = req.user; // Authenticated user
+  const user = req.user;
   const { name, date, createdAt } = req.body;
   const { tripId } = req.params;
 
@@ -108,6 +204,11 @@ router.post("/:tripId/events", async (req, res) => {
   }
 
   try {
+    const tripDoc = await tripsRef.doc(tripId).get();
+    if (!tripDoc.exists) {
+      return res.status(404).json({ error: "Trip not found" });
+    }
+
     const eventRef = db.collection(`trips/${tripId}/events`).doc();
     const event = {
       id: eventRef.id,
@@ -139,10 +240,6 @@ router.get("/:tripId/events", async (req, res) => {
     const eventsRef = db.collection(`trips/${tripId}/events`);
     const eventsSnapshot = await eventsRef.get();
 
-    if (eventsSnapshot.empty) {
-      return res.status(404).json({ error: "No events found for this trip" });
-    }
-
     const events = eventsSnapshot.docs.map((doc) => ({
       id: doc.id,
       ...doc.data(),
@@ -153,40 +250,6 @@ router.get("/:tripId/events", async (req, res) => {
     res
       .status(500)
       .json({ error: "Failed to retrieve events", details: err.message });
-  }
-});
-
-// GET ALL TRIPS FOR A USER
-router.get("/user", async (req, res) => {
-  const user = req.user; // Authenticated user
-
-  try {
-    const tripsSnapshot = await tripsRef
-      .where("memberIds", "array-contains", user.id)
-      .get();
-
-    const ownerTripsSnapshot = await tripsRef
-      .where("owner.userId", "==", user.id)
-      .get();
-
-    const tripsSnapshotDocs = tripsSnapshot.docs;
-    const ownerTripsSnapshotDocs = ownerTripsSnapshot.docs;
-
-    const combinedTrips = [...tripsSnapshotDocs, ...ownerTripsSnapshotDocs];
-    const uniqueTrips = Array.from(
-      new Map(combinedTrips.map((doc) => [doc.id, doc])).values()
-    );
-
-    const trips = uniqueTrips.map((doc) => ({
-      id: doc.id,
-      ...doc.data(),
-    }));
-
-    res.status(200).json(trips);
-  } catch (err) {
-    res
-      .status(500)
-      .json({ error: "Failed to retrieve trips", details: err.message });
   }
 });
 
