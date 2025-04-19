@@ -196,7 +196,7 @@ router.post("/:tripId/invite", async (req, res) => {
 // CREATE EVENT
 router.post("/:tripId/events", async (req, res) => {
   const user = req.user;
-  const { name, date, createdAt } = req.body;
+  const { name, date, description, createdAt } = req.body;
   const { tripId } = req.params;
 
   if (!name || !date) {
@@ -213,6 +213,7 @@ router.post("/:tripId/events", async (req, res) => {
     const event = {
       id: eventRef.id,
       name,
+      description,
       date,
       createdAt,
       createdBy: {
@@ -238,7 +239,7 @@ router.get("/:tripId/events", async (req, res) => {
 
   try {
     const eventsRef = db.collection(`trips/${tripId}/events`);
-    const eventsSnapshot = await eventsRef.get();
+    const eventsSnapshot = await eventsRef.orderBy("date", "asc").get();
 
     const events = eventsSnapshot.docs.map((doc) => ({
       id: doc.id,
