@@ -400,4 +400,105 @@ router.patch(
   }
 );
 
+// DELETE TRIP BY ID (DELETE EVENTS AND TASKS, LEAVING PAYMENTS)
+router.delete("/:tripId", async (req, res) => {
+  const user = req.user;
+  const { tripId } = req.params;
+
+  try {
+    const tripDoc = await tripsRef.doc(tripId).get();
+
+    if (!tripDoc.exists) {
+      return res.status(404).json({ error: "Trip not found" });
+    }
+
+    const trip = tripDoc.data();
+
+    if (trip.owner.userId !== user.id) {
+      return res
+        .status(403)
+        .json({ error: "Only the owner can delete this trip" });
+    }
+
+    const eventsRef = db.collection(`trips/${tripId}/events`);
+    const eventsSnapshot = await eventsRef.get();
+
+    for (const eventDoc of eventsSnapshot.docs) {
+      const eventId = eventDoc.id;
+
+      const tasksRef = db.collection(`trips/${tripId}/events/${eventId}/tasks`);
+      const tasksSnapshot = await tasksRef.get();
+
+      const taskBatch = db.batch();
+      tasksSnapshot.forEach((taskDoc) => {
+        taskBatch.delete(taskDoc.ref);
+      });
+      await taskBatch.commit();
+
+      await db.doc(`trips/${tripId}/events/${eventId}`).delete();
+    }
+
+    await tripsRef.doc(tripId).delete();
+
+    res
+      .status(200)
+      .json({ message: "Trip, events, and tasks deleted successfully" });
+  } catch (err) {
+    console.error("Delete trip failed:", err);
+    res
+      .status(500)
+      .json({ error: "Failed to delete trip", details: err.message });
+  }
+});
+
+// DELETE EVENT BY ID (DELETE ALL TASKS UNDER THE EVENT)
+router.delete("/:tripId/events/:eventId", async (req, res) => {
+  const user = req.user;
+  const { tripId, eventId } = req.params;
+
+  try {
+    const tripDoc = await tripsRef.doc(tripId).get();
+
+    if (!tripDoc.exists) {
+      return res.status(404).json({ error: "Trip not found" });
+    }
+    const trip = tripDoc.data();
+
+    const eventRef = db.collection(`trips/${tripId}/events`).doc(eventId);
+    const eventDoc = await eventRef.get();
+    const event = eventDoc.data();
+
+    if (trip.owner.userId !== user.id && event.createdBy.userId !== user.id) {
+      return res
+        .status(403)
+        .json({ error: "Only the owner can delete this event" });
+    }
+
+    if (!eventDoc.exists) {
+      return res.status(404).json({ error: "Event not found" });
+    }
+
+    const tasksRef = db.collection(`trips/${tripId}/events/${eventId}/tasks`);
+    const tasksSnapshot = await tasksRef.get();
+
+    const batch = db.batch();
+
+    tasksSnapshot.forEach((taskDoc) => {
+      batch.delete(taskDoc.ref);
+    });
+
+    batch.delete(eventRef);
+
+    await batch.commit();
+
+    res
+      .status(200)
+      .json({ message: "Event and its tasks deleted successfully" });
+  } catch (err) {
+    res
+      .status(500)
+      .json({ error: "Failed to delete event", details: err.message });
+  }
+});
+
 module.exports = router;
