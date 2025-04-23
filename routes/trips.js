@@ -150,7 +150,7 @@ router.post("/:tripId/invite", async (req, res) => {
     let invitedUser;
     try {
       const response = await axios.post(
-        `${process.env.AUTH_SERVICE_URL}/auth/email`,
+        `${process.env.AUTH_SERVICE_URL}/api/auth/email`,
         {
           email,
         }
